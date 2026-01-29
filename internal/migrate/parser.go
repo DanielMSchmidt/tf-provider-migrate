@@ -54,14 +54,20 @@ func findProviderInfo(moduleRoot string) (ProviderInfo, error) {
 		return ProviderInfo{}, err
 	}
 
+	fset := token.NewFileSet()
+	parsed := make([]*ast.File, 0, len(files))
+	paths := make([]string, 0, len(files))
 	for _, file := range files {
-		fset := token.NewFileSet()
 		node, err := parser.ParseFile(fset, file, nil, parser.ParseComments)
 		if err != nil {
 			return ProviderInfo{}, err
 		}
+		parsed = append(parsed, node)
+		paths = append(paths, file)
+	}
 
-		res := buildResolver(node)
+	res := buildResolver(parsed)
+	for i, node := range parsed {
 		for _, decl := range node.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok || fn.Name == nil || fn.Name.Name != "Provider" {
@@ -74,7 +80,7 @@ func findProviderInfo(moduleRoot string) (ProviderInfo, error) {
 
 			info, ok, err := parseProviderFunction(fn, res)
 			if err != nil {
-				return ProviderInfo{}, fmt.Errorf("%s: %w", file, err)
+				return ProviderInfo{}, fmt.Errorf("%s: %w", paths[i], err)
 			}
 			if ok {
 				return info, nil
@@ -126,6 +132,16 @@ func parseProviderFunction(fn *ast.FuncDecl, res resolver) (ProviderInfo, bool, 
 		comp, ok := ret.Results[0].(*ast.UnaryExpr)
 		if ok && comp.Op == token.AND {
 			if lit, ok := comp.X.(*ast.CompositeLit); ok {
+				attrs, blocks, err := parseProviderComposite(lit, res)
+				if err != nil {
+					return ProviderInfo{}, false, err
+				}
+				return ProviderInfo{Attributes: attrs, Blocks: blocks}, true, nil
+			}
+		}
+
+		if ident, ok := ret.Results[0].(*ast.Ident); ok {
+			if lit := findLocalProviderLiteral(fn, ident.Name); lit != nil {
 				attrs, blocks, err := parseProviderComposite(lit, res)
 				if err != nil {
 					return ProviderInfo{}, false, err
@@ -553,34 +569,36 @@ func parseIntLiteral(expr ast.Expr) (int, bool) {
 	return val, true
 }
 
-func buildResolver(node *ast.File) resolver {
+func buildResolver(files []*ast.File) resolver {
 	res := resolver{
 		varMaps: map[string]*ast.CompositeLit{},
 		funcs:   map[string]*ast.FuncDecl{},
 	}
 
-	for _, decl := range node.Decls {
-		switch d := decl.(type) {
-		case *ast.FuncDecl:
-			if d.Name != nil && d.Name.Name != "" {
-				res.funcs[d.Name.Name] = d
-			}
-		case *ast.GenDecl:
-			if d.Tok != token.VAR {
-				continue
-			}
-			for _, spec := range d.Specs {
-				valueSpec, ok := spec.(*ast.ValueSpec)
-				if !ok {
+	for _, node := range files {
+		for _, decl := range node.Decls {
+			switch d := decl.(type) {
+			case *ast.FuncDecl:
+				if d.Name != nil && d.Name.Name != "" {
+					res.funcs[d.Name.Name] = d
+				}
+			case *ast.GenDecl:
+				if d.Tok != token.VAR {
 					continue
 				}
-				for i, name := range valueSpec.Names {
-					if i >= len(valueSpec.Values) {
+				for _, spec := range d.Specs {
+					valueSpec, ok := spec.(*ast.ValueSpec)
+					if !ok {
 						continue
 					}
-					if lit, ok := valueSpec.Values[i].(*ast.CompositeLit); ok {
-						if _, ok := lit.Type.(*ast.MapType); ok || lit.Type == nil {
-							res.varMaps[name.Name] = lit
+					for i, name := range valueSpec.Names {
+						if i >= len(valueSpec.Values) {
+							continue
+						}
+						if lit, ok := valueSpec.Values[i].(*ast.CompositeLit); ok {
+							if _, ok := lit.Type.(*ast.MapType); ok || lit.Type == nil {
+								res.varMaps[name.Name] = lit
+							}
 						}
 					}
 				}
@@ -600,6 +618,11 @@ func parseSchemaMapFromFunc(fn *ast.FuncDecl, res resolver) ([]Attribute, []Bloc
 		if !ok || len(ret.Results) == 0 {
 			continue
 		}
+		if ident, ok := ret.Results[0].(*ast.Ident); ok {
+			if lit := findLocalMapLiteral(fn, ident.Name); lit != nil {
+				return parseSchemaMap(lit, res)
+			}
+		}
 		return parseSchemaMapExpr(ret.Results[0], res)
 	}
 	return nil, nil, fmt.Errorf("schema map function has no return")
@@ -612,6 +635,100 @@ func functionName(expr ast.Expr) string {
 	default:
 		return ""
 	}
+}
+
+func findLocalMapLiteral(fn *ast.FuncDecl, name string) *ast.CompositeLit {
+	if fn.Body == nil {
+		return nil
+	}
+
+	for _, stmt := range fn.Body.List {
+		switch s := stmt.(type) {
+		case *ast.AssignStmt:
+			for i, lhs := range s.Lhs {
+				ident, ok := lhs.(*ast.Ident)
+				if !ok || ident.Name != name || i >= len(s.Rhs) {
+					continue
+				}
+				if lit, ok := s.Rhs[i].(*ast.CompositeLit); ok {
+					return lit
+				}
+			}
+		case *ast.DeclStmt:
+			gen, ok := s.Decl.(*ast.GenDecl)
+			if !ok || gen.Tok != token.VAR {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				valueSpec, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for i, ident := range valueSpec.Names {
+					if ident.Name != name || i >= len(valueSpec.Values) {
+						continue
+					}
+					if lit, ok := valueSpec.Values[i].(*ast.CompositeLit); ok {
+						return lit
+					}
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+func findLocalProviderLiteral(fn *ast.FuncDecl, name string) *ast.CompositeLit {
+	if fn.Body == nil {
+		return nil
+	}
+
+	for _, stmt := range fn.Body.List {
+		switch s := stmt.(type) {
+		case *ast.AssignStmt:
+			for i, lhs := range s.Lhs {
+				ident, ok := lhs.(*ast.Ident)
+				if !ok || ident.Name != name || i >= len(s.Rhs) {
+					continue
+				}
+				if lit, ok := s.Rhs[i].(*ast.CompositeLit); ok {
+					return lit
+				}
+				if unary, ok := s.Rhs[i].(*ast.UnaryExpr); ok && unary.Op == token.AND {
+					if lit, ok := unary.X.(*ast.CompositeLit); ok {
+						return lit
+					}
+				}
+			}
+		case *ast.DeclStmt:
+			gen, ok := s.Decl.(*ast.GenDecl)
+			if !ok || gen.Tok != token.VAR {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				valueSpec, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for i, ident := range valueSpec.Names {
+					if ident.Name != name || i >= len(valueSpec.Values) {
+						continue
+					}
+					if lit, ok := valueSpec.Values[i].(*ast.CompositeLit); ok {
+						return lit
+					}
+					if unary, ok := valueSpec.Values[i].(*ast.UnaryExpr); ok && unary.Op == token.AND {
+						if lit, ok := unary.X.(*ast.CompositeLit); ok {
+							return lit
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return nil
 }
 
 func goFiles(root string) ([]string, error) {
