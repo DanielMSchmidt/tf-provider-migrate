@@ -36,6 +36,6 @@ const (
 	TypeMap
 )
 
-func NewGRPCProviderServer(_ *Provider) func() tfprotov5.ProviderServer {
-	return func() tfprotov5.ProviderServer { return nil }
+func NewGRPCProviderServer(_ *Provider) tfprotov5.ProviderServer {
+	return nil
 }

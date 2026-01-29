@@ -17,6 +17,12 @@ func renderFrameworkProvider(info ProviderInfo, providerName string) ([]byte, er
 		return attrs[i].Name < attrs[j].Name
 	})
 
+	blocks := make([]Block, len(info.Blocks))
+	copy(blocks, info.Blocks)
+	sort.Slice(blocks, func(i, j int) bool {
+		return blocks[i].Name < blocks[j].Name
+	})
+
 	useTypes := false
 	for _, attr := range attrs {
 		if attr.Type == "list" || attr.Type == "set" || attr.Type == "map" {
@@ -24,17 +30,32 @@ func renderFrameworkProvider(info ProviderInfo, providerName string) ([]byte, er
 			break
 		}
 	}
+	if !useTypes {
+		for _, block := range blocks {
+			for _, attr := range block.Attributes {
+				if attr.Type == "list" || attr.Type == "set" || attr.Type == "map" {
+					useTypes = true
+					break
+				}
+			}
+			if useTypes {
+				break
+			}
+		}
+	}
 
 	data := map[string]interface{}{
 		"ProviderName": providerName,
 		"Attributes":   attrs,
+		"Blocks":       blocks,
 		"UseTypes":     useTypes,
 	}
 
 	var buf bytes.Buffer
 	tmpl := template.Must(template.New("framework").Funcs(template.FuncMap{
-		"attrLiteral": renderAttributeLiteral,
-		"elementType": renderElementType,
+		"attrLiteral":  renderAttributeLiteral,
+		"blockLiteral": renderBlockLiteral,
+		"elementType":  renderElementType,
 	}).Parse(frameworkTemplate))
 
 	if err := tmpl.Execute(&buf, data); err != nil {
@@ -90,6 +111,34 @@ func renderAttributeLiteral(attr Attribute) string {
 		fmt.Fprintf(&buf, "ElementType: %s,", renderElementType(attr))
 	}
 	buf.WriteString("}")
+	return buf.String()
+}
+
+func renderBlockLiteral(block Block) string {
+	var buf bytes.Buffer
+
+	blockType := "ListNestedBlock"
+	if block.Kind == "set" {
+		blockType = "SetNestedBlock"
+	}
+
+	fmt.Fprintf(&buf, "schema.%s{", blockType)
+	if block.Description != "" {
+		fmt.Fprintf(&buf, "Description: %q,", block.Description)
+	}
+	buf.WriteString("NestedObject: schema.NestedBlockObject{Attributes: map[string]schema.Attribute{")
+
+	attrs := make([]Attribute, len(block.Attributes))
+	copy(attrs, block.Attributes)
+	sort.Slice(attrs, func(i, j int) bool {
+		return attrs[i].Name < attrs[j].Name
+	})
+
+	for _, attr := range attrs {
+		fmt.Fprintf(&buf, "%q: %s,", attr.Name, renderAttributeLiteral(attr))
+	}
+	buf.WriteString("}},}")
+
 	return buf.String()
 }
 
@@ -173,7 +222,11 @@ func (p *fwprovider) Schema(_ context.Context, _ provider.SchemaRequest, respons
 			"{{ .Name }}": {{ attrLiteral . }},
 			{{- end }}
 		},
-		Blocks: map[string]schema.Block{},
+		Blocks: map[string]schema.Block{
+			{{- range .Blocks }}
+			"{{ .Name }}": {{ blockLiteral . }},
+			{{- end }}
+		},
 	}
 }
 
@@ -201,6 +254,7 @@ import (
 	"{{ .FrameworkImport }}"
 	"{{ .ProviderImport }}"
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
+	"github.com/hashicorp/terraform-plugin-go/tfprotov5"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov5/tf5server"
 	"github.com/hashicorp/terraform-plugin-mux/tf5muxserver"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -215,7 +269,9 @@ func main() {
 
 	ctx := context.Background()
 	muxServer, err := tf5muxserver.NewMuxServer(ctx,
-		schema.NewGRPCProviderServer(primary),
+		func() tfprotov5.ProviderServer {
+			return schema.NewGRPCProviderServer(primary)
+		},
 		providerserver.NewProtocol5(framework.New(primary)),
 	)
 	if err != nil {

@@ -13,12 +13,15 @@ import (
 
 type ProviderInfo struct {
 	Attributes []Attribute
+	Blocks     []Block
 }
 
 type Attribute struct {
 	Name        string
 	Type        string
 	ElemType    string
+	MinItems    *int
+	MaxItems    *int
 	Optional    bool
 	Required    bool
 	Computed    bool
@@ -31,6 +34,13 @@ type MainInfo struct {
 	ProviderAlias  string
 	BuildTags      []string
 	GoGenerate     []string
+}
+
+type Block struct {
+	Name        string
+	Kind        string
+	Description string
+	Attributes  []Attribute
 }
 
 func findProviderInfo(moduleRoot string) (ProviderInfo, error) {
@@ -74,6 +84,33 @@ func parseProviderFunction(fn *ast.FuncDecl) (ProviderInfo, bool, error) {
 		return ProviderInfo{}, false, nil
 	}
 
+	var providerLit *ast.CompositeLit
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		switch expr := n.(type) {
+		case *ast.UnaryExpr:
+			if expr.Op == token.AND {
+				if lit, ok := expr.X.(*ast.CompositeLit); ok && isSchemaProviderType(lit.Type) {
+					providerLit = lit
+					return false
+				}
+			}
+		case *ast.CompositeLit:
+			if isSchemaProviderType(expr.Type) {
+				providerLit = expr
+				return false
+			}
+		}
+		return true
+	})
+
+	if providerLit != nil {
+		attrs, blocks, err := parseProviderComposite(providerLit)
+		if err != nil {
+			return ProviderInfo{}, false, err
+		}
+		return ProviderInfo{Attributes: attrs, Blocks: blocks}, true, nil
+	}
+
 	for _, stmt := range fn.Body.List {
 		ret, ok := stmt.(*ast.ReturnStmt)
 		if !ok || len(ret.Results) == 0 {
@@ -83,11 +120,11 @@ func parseProviderFunction(fn *ast.FuncDecl) (ProviderInfo, bool, error) {
 		comp, ok := ret.Results[0].(*ast.UnaryExpr)
 		if ok && comp.Op == token.AND {
 			if lit, ok := comp.X.(*ast.CompositeLit); ok {
-				attrs, err := parseProviderComposite(lit)
+				attrs, blocks, err := parseProviderComposite(lit)
 				if err != nil {
 					return ProviderInfo{}, false, err
 				}
-				return ProviderInfo{Attributes: attrs}, true, nil
+				return ProviderInfo{Attributes: attrs, Blocks: blocks}, true, nil
 			}
 		}
 	}
@@ -95,9 +132,9 @@ func parseProviderFunction(fn *ast.FuncDecl) (ProviderInfo, bool, error) {
 	return ProviderInfo{}, false, nil
 }
 
-func parseProviderComposite(lit *ast.CompositeLit) ([]Attribute, error) {
+func parseProviderComposite(lit *ast.CompositeLit) ([]Attribute, []Block, error) {
 	if !isSchemaProviderType(lit.Type) {
-		return nil, fmt.Errorf("return value is not schema.Provider literal")
+		return nil, nil, fmt.Errorf("return value is not schema.Provider literal")
 	}
 
 	for _, elt := range lit.Elts {
@@ -113,21 +150,22 @@ func parseProviderComposite(lit *ast.CompositeLit) ([]Attribute, error) {
 
 		mapLit, ok := kv.Value.(*ast.CompositeLit)
 		if !ok {
-			return nil, fmt.Errorf("provider Schema is not a composite literal")
+			return nil, nil, fmt.Errorf("provider Schema is not a composite literal")
 		}
 
 		return parseSchemaMap(mapLit)
 	}
 
-	return nil, fmt.Errorf("provider Schema field not found")
+	return nil, nil, nil
 }
 
-func parseSchemaMap(lit *ast.CompositeLit) ([]Attribute, error) {
+func parseSchemaMap(lit *ast.CompositeLit) ([]Attribute, []Block, error) {
 	if _, ok := lit.Type.(*ast.MapType); !ok && lit.Type != nil {
-		return nil, fmt.Errorf("provider Schema is not a map literal")
+		return nil, nil, fmt.Errorf("provider Schema is not a map literal")
 	}
 
 	var attrs []Attribute
+	var blocks []Block
 	for _, elt := range lit.Elts {
 		kv, ok := elt.(*ast.KeyValueExpr)
 		if !ok {
@@ -136,20 +174,24 @@ func parseSchemaMap(lit *ast.CompositeLit) ([]Attribute, error) {
 
 		name, ok := parseStringLiteral(kv.Key)
 		if !ok {
-			return nil, fmt.Errorf("schema attribute name must be string literal")
+			return nil, nil, fmt.Errorf("schema attribute name must be string literal")
 		}
 
-		attr, err := parseSchemaAttribute(name, kv.Value)
+		attr, block, err := parseSchemaAttribute(name, kv.Value)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		attrs = append(attrs, attr)
+		if block != nil {
+			blocks = append(blocks, *block)
+		} else {
+			attrs = append(attrs, attr)
+		}
 	}
 
-	return attrs, nil
+	return attrs, blocks, nil
 }
 
-func parseSchemaAttribute(name string, expr ast.Expr) (Attribute, error) {
+func parseSchemaAttribute(name string, expr ast.Expr) (Attribute, *Block, error) {
 	lit, ok := expr.(*ast.UnaryExpr)
 	if ok && lit.Op == token.AND {
 		if comp, ok := lit.X.(*ast.CompositeLit); ok {
@@ -161,24 +203,16 @@ func parseSchemaAttribute(name string, expr ast.Expr) (Attribute, error) {
 		return parseSchemaComposite(name, comp)
 	}
 
-	return Attribute{}, fmt.Errorf("schema attribute %q is not a schema.Schema literal", name)
+	return Attribute{}, nil, fmt.Errorf("schema attribute %q is not a schema.Schema literal", name)
 }
 
-func parseSchemaComposite(name string, lit *ast.CompositeLit) (Attribute, error) {
-	if !isSchemaSchemaType(lit.Type) {
-		return Attribute{}, fmt.Errorf("schema attribute %q is not schema.Schema", name)
+func parseSchemaComposite(name string, lit *ast.CompositeLit) (Attribute, *Block, error) {
+	if lit.Type != nil && !isSchemaSchemaType(lit.Type) {
+		return Attribute{}, nil, fmt.Errorf("schema attribute %q is not schema.Schema", name)
 	}
 
 	attr := Attribute{Name: name}
-	allowedFields := map[string]bool{
-		"Type":        true,
-		"Optional":    true,
-		"Required":    true,
-		"Computed":    true,
-		"Sensitive":   true,
-		"Description": true,
-		"Elem":        true,
-	}
+	var elemInfo elemInfo
 
 	for _, elt := range lit.Elts {
 		kv, ok := elt.(*ast.KeyValueExpr)
@@ -191,65 +225,89 @@ func parseSchemaComposite(name string, lit *ast.CompositeLit) (Attribute, error)
 			continue
 		}
 
-		if !allowedFields[key.Name] {
-			return Attribute{}, fmt.Errorf("schema attribute %q uses unsupported field %q", name, key.Name)
-		}
-
 		switch key.Name {
 		case "Type":
 			typ, err := parseSchemaType(kv.Value)
 			if err != nil {
-				return Attribute{}, fmt.Errorf("schema attribute %q: %w", name, err)
+				return Attribute{}, nil, fmt.Errorf("schema attribute %q: %w", name, err)
 			}
 			attr.Type = typ
 		case "Optional":
 			val, ok := parseBoolLiteral(kv.Value)
 			if !ok {
-				return Attribute{}, fmt.Errorf("schema attribute %q Optional must be bool literal", name)
+				return Attribute{}, nil, fmt.Errorf("schema attribute %q Optional must be bool literal", name)
 			}
 			attr.Optional = val
 		case "Required":
 			val, ok := parseBoolLiteral(kv.Value)
 			if !ok {
-				return Attribute{}, fmt.Errorf("schema attribute %q Required must be bool literal", name)
+				return Attribute{}, nil, fmt.Errorf("schema attribute %q Required must be bool literal", name)
 			}
 			attr.Required = val
 		case "Computed":
 			val, ok := parseBoolLiteral(kv.Value)
 			if !ok {
-				return Attribute{}, fmt.Errorf("schema attribute %q Computed must be bool literal", name)
+				return Attribute{}, nil, fmt.Errorf("schema attribute %q Computed must be bool literal", name)
 			}
 			attr.Computed = val
 		case "Sensitive":
 			val, ok := parseBoolLiteral(kv.Value)
 			if !ok {
-				return Attribute{}, fmt.Errorf("schema attribute %q Sensitive must be bool literal", name)
+				return Attribute{}, nil, fmt.Errorf("schema attribute %q Sensitive must be bool literal", name)
 			}
 			attr.Sensitive = val
 		case "Description":
-			val, ok := parseStringLiteral(kv.Value)
-			if !ok {
-				return Attribute{}, fmt.Errorf("schema attribute %q Description must be string literal", name)
+			if val, ok := parseStringExpr(kv.Value); ok {
+				attr.Description = val
 			}
-			attr.Description = val
 		case "Elem":
-			elemType, err := parseElemType(kv.Value)
+			info, err := parseElem(kv.Value)
 			if err != nil {
-				return Attribute{}, fmt.Errorf("schema attribute %q: %w", name, err)
+				return Attribute{}, nil, fmt.Errorf("schema attribute %q: %w", name, err)
 			}
-			attr.ElemType = elemType
+			elemInfo = info
+		case "MinItems":
+			if val, ok := parseIntLiteral(kv.Value); ok {
+				attr.MinItems = &val
+			}
+		case "MaxItems":
+			if val, ok := parseIntLiteral(kv.Value); ok {
+				attr.MaxItems = &val
+			}
 		}
 	}
 
 	if attr.Type == "" {
-		return Attribute{}, fmt.Errorf("schema attribute %q missing Type", name)
+		return Attribute{}, nil, fmt.Errorf("schema attribute %q missing Type", name)
+	}
+
+	if elemInfo.isResource {
+		if attr.Type != "list" && attr.Type != "set" {
+			return Attribute{}, nil, fmt.Errorf("schema attribute %q has resource Elem but type is %s", name, attr.Type)
+		}
+
+		if len(elemInfo.blocks) > 0 {
+			return Attribute{}, nil, fmt.Errorf("schema attribute %q has nested blocks inside Elem resource (unsupported)", name)
+		}
+
+		block := Block{
+			Name:        name,
+			Kind:        attr.Type,
+			Description: attr.Description,
+			Attributes:  elemInfo.attrs,
+		}
+		return Attribute{}, &block, nil
+	}
+
+	if elemInfo.elemType != "" {
+		attr.ElemType = elemInfo.elemType
 	}
 
 	if (attr.Type == "list" || attr.Type == "set" || attr.Type == "map") && attr.ElemType == "" {
-		return Attribute{}, fmt.Errorf("schema attribute %q missing Elem type", name)
+		return Attribute{}, nil, fmt.Errorf("schema attribute %q missing Elem type", name)
 	}
 
-	return attr, nil
+	return attr, nil, nil
 }
 
 func parseSchemaType(expr ast.Expr) (string, error) {
@@ -286,40 +344,78 @@ func normalizeSchemaType(name string) (string, error) {
 	}
 }
 
-func parseElemType(expr ast.Expr) (string, error) {
+type elemInfo struct {
+	elemType   string
+	attrs      []Attribute
+	blocks     []Block
+	isResource bool
+}
+
+func parseElem(expr ast.Expr) (elemInfo, error) {
 	lit, ok := expr.(*ast.UnaryExpr)
 	if ok && lit.Op == token.AND {
 		if comp, ok := lit.X.(*ast.CompositeLit); ok {
-			return parseElemTypeFromComposite(comp)
+			return parseElemFromComposite(comp)
 		}
 	}
 
 	if comp, ok := expr.(*ast.CompositeLit); ok {
-		return parseElemTypeFromComposite(comp)
+		return parseElemFromComposite(comp)
 	}
 
-	return "", fmt.Errorf("Elem must be schema.Schema literal")
+	return elemInfo{}, fmt.Errorf("Elem must be schema.Schema or schema.Resource literal")
 }
 
-func parseElemTypeFromComposite(lit *ast.CompositeLit) (string, error) {
-	if !isSchemaSchemaType(lit.Type) {
-		return "", fmt.Errorf("Elem must be schema.Schema literal")
+func parseElemFromComposite(lit *ast.CompositeLit) (elemInfo, error) {
+	if lit.Type == nil || isSchemaSchemaType(lit.Type) {
+		for _, elt := range lit.Elts {
+			kv, ok := elt.(*ast.KeyValueExpr)
+			if !ok {
+				continue
+			}
+			key, ok := kv.Key.(*ast.Ident)
+			if !ok || key.Name != "Type" {
+				continue
+			}
+
+			elemType, err := parseSchemaType(kv.Value)
+			if err != nil {
+				return elemInfo{}, err
+			}
+			return elemInfo{elemType: elemType}, nil
+		}
+		return elemInfo{}, fmt.Errorf("Elem schema missing Type")
 	}
 
+	if isSchemaResourceType(lit.Type) {
+		attrs, blocks, err := parseResourceSchema(lit)
+		if err != nil {
+			return elemInfo{}, err
+		}
+		return elemInfo{attrs: attrs, blocks: blocks, isResource: true}, nil
+	}
+
+	return elemInfo{}, fmt.Errorf("Elem must be schema.Schema or schema.Resource literal")
+}
+
+func parseResourceSchema(lit *ast.CompositeLit) ([]Attribute, []Block, error) {
 	for _, elt := range lit.Elts {
 		kv, ok := elt.(*ast.KeyValueExpr)
 		if !ok {
 			continue
 		}
 		key, ok := kv.Key.(*ast.Ident)
-		if !ok || key.Name != "Type" {
+		if !ok || key.Name != "Schema" {
 			continue
 		}
-
-		return parseSchemaType(kv.Value)
+		mapLit, ok := kv.Value.(*ast.CompositeLit)
+		if !ok {
+			return nil, nil, fmt.Errorf("resource Schema is not a composite literal")
+		}
+		return parseSchemaMap(mapLit)
 	}
 
-	return "", fmt.Errorf("Elem schema missing Type")
+	return nil, nil, fmt.Errorf("resource Schema field not found")
 }
 
 func returnsSchemaProvider(fnType *ast.FuncType) bool {
@@ -363,6 +459,20 @@ func isSchemaSchemaType(expr ast.Expr) bool {
 	return false
 }
 
+func isSchemaResourceType(expr ast.Expr) bool {
+	switch v := expr.(type) {
+	case *ast.StarExpr:
+		return isSchemaResourceType(v.X)
+	case *ast.SelectorExpr:
+		if ident, ok := v.X.(*ast.Ident); ok && ident.Name == "schema" && v.Sel.Name == "Resource" {
+			return true
+		}
+	case *ast.Ident:
+		return v.Name == "Resource"
+	}
+	return false
+}
+
 func parseStringLiteral(expr ast.Expr) (string, bool) {
 	lit, ok := expr.(*ast.BasicLit)
 	if !ok || lit.Kind != token.STRING {
@@ -373,6 +483,24 @@ func parseStringLiteral(expr ast.Expr) (string, bool) {
 		return "", false
 	}
 	return value, true
+}
+
+func parseStringExpr(expr ast.Expr) (string, bool) {
+	if val, ok := parseStringLiteral(expr); ok {
+		return val, true
+	}
+	if bin, ok := expr.(*ast.BinaryExpr); ok && bin.Op == token.ADD {
+		left, ok := parseStringExpr(bin.X)
+		if !ok {
+			return "", false
+		}
+		right, ok := parseStringExpr(bin.Y)
+		if !ok {
+			return "", false
+		}
+		return left + right, true
+	}
+	return "", false
 }
 
 func parseBoolLiteral(expr ast.Expr) (bool, bool) {
@@ -387,6 +515,18 @@ func parseBoolLiteral(expr ast.Expr) (bool, bool) {
 		return false, true
 	}
 	return false, false
+}
+
+func parseIntLiteral(expr ast.Expr) (int, bool) {
+	lit, ok := expr.(*ast.BasicLit)
+	if !ok || (lit.Kind != token.INT && lit.Kind != token.FLOAT) {
+		return 0, false
+	}
+	val, err := strconv.Atoi(strings.TrimSpace(lit.Value))
+	if err != nil {
+		return 0, false
+	}
+	return val, true
 }
 
 func goFiles(root string) ([]string, error) {

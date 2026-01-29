@@ -11,6 +11,10 @@ type Block interface{}
 
 type Attribute interface{}
 
+type NestedBlockObject struct {
+	Attributes map[string]Attribute
+}
+
 type StringAttribute struct {
 	Optional    bool
 	Required    bool
@@ -68,4 +72,14 @@ type MapAttribute struct {
 	Sensitive   bool
 	Description string
 	ElementType types.Type
+}
+
+type ListNestedBlock struct {
+	Description  string
+	NestedObject NestedBlockObject
+}
+
+type SetNestedBlock struct {
+	Description  string
+	NestedObject NestedBlockObject
 }
