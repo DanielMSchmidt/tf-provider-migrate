@@ -24,7 +24,7 @@ func Check(opts Options) (Report, error) {
 		return Report{}, err
 	}
 
-	providerName, registryAddress, notes, err := deriveNames(opts, moduleRoot)
+	providerName, registryAddress, notes, err := deriveNames(opts, moduleRoot, false)
 	if err != nil {
 		return Report{}, err
 	}
@@ -47,12 +47,11 @@ func Check(opts Options) (Report, error) {
 }
 
 func Migrate(opts Options) (Report, error) {
-	report, err := Check(opts)
+	moduleRoot, err := findModuleRoot(opts.Path)
 	if err != nil {
 		return Report{}, err
 	}
 
-	moduleRoot := report.ModuleRoot
 	providerInfo, err := findProviderInfo(moduleRoot)
 	if err != nil {
 		return Report{}, err
@@ -61,6 +60,25 @@ func Migrate(opts Options) (Report, error) {
 	mainFile, mainInfo, err := findMainInfo(moduleRoot)
 	if err != nil {
 		return Report{}, err
+	}
+
+	providerName, registryAddress, notes, err := deriveNames(opts, moduleRoot, true)
+	if err != nil {
+		return Report{}, err
+	}
+
+	if mainInfo.ProviderImport == "" {
+		return Report{}, fmt.Errorf("main package does not reference provider.Provider()")
+	}
+
+	report := Report{
+		ModuleRoot:      moduleRoot,
+		MainFile:        mainFile,
+		FrameworkFile:   filepath.Join(moduleRoot, "framework", "provider.go"),
+		ProviderName:    providerName,
+		RegistryAddress: registryAddress,
+		Attributes:      len(providerInfo.Attributes),
+		Notes:           notes,
 	}
 
 	frameworkPath := filepath.Join(moduleRoot, "framework", "provider.go")

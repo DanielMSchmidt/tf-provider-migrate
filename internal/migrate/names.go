@@ -5,12 +5,13 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"golang.org/x/mod/modfile"
 )
 
-func deriveNames(opts Options, moduleRoot string) (string, string, []string, error) {
+func deriveNames(opts Options, moduleRoot string, strict bool) (string, string, []string, error) {
 	var notes []string
 	modulePath, err := modulePathFromGoMod(filepath.Join(moduleRoot, "go.mod"))
 	if err != nil {
@@ -21,18 +22,26 @@ func deriveNames(opts Options, moduleRoot string) (string, string, []string, err
 	if providerName == "" {
 		providerName = deriveProviderName(modulePath)
 		if providerName == "" {
-			return "", "", nil, fmt.Errorf("unable to derive provider name, supply --provider-name")
+			if strict {
+				return "", "", nil, fmt.Errorf("unable to derive provider name, supply --provider-name")
+			}
+			notes = append(notes, "provider name not derived; supply --provider-name for migration")
+		} else {
+			notes = append(notes, "provider name derived from module path")
 		}
-		notes = append(notes, "provider name derived from module path")
 	}
 
 	registry := opts.RegistryAddress
 	if registry == "" {
 		registry = deriveRegistryAddress(modulePath)
 		if registry == "" {
-			return "", "", nil, fmt.Errorf("unable to derive registry address, supply --registry-address")
+			if strict {
+				return "", "", nil, fmt.Errorf("unable to derive registry address, supply --registry-address")
+			}
+			notes = append(notes, "registry address not derived; supply --registry-address for migration")
+		} else {
+			notes = append(notes, "registry address derived from module path")
 		}
-		notes = append(notes, "registry address derived from module path")
 	}
 
 	return providerName, registry, notes, nil
@@ -54,17 +63,13 @@ func modulePathFromGoMod(path string) (string, error) {
 }
 
 func deriveProviderName(modulePath string) string {
-	base := path.Base(modulePath)
+	base := moduleBase(modulePath)
 	if strings.HasPrefix(base, "terraform-provider-") {
 		return strings.TrimPrefix(base, "terraform-provider-")
 	}
 
-	parts := strings.Split(modulePath, "/")
-	if len(parts) >= 2 {
-		candidate := parts[len(parts)-1]
-		if strings.HasPrefix(candidate, "terraform-provider-") {
-			return strings.TrimPrefix(candidate, "terraform-provider-")
-		}
+	if base != "" {
+		return base
 	}
 
 	return ""
@@ -79,7 +84,7 @@ func deriveRegistryAddress(modulePath string) string {
 	host := parts[0]
 	if host == "github.com" && len(parts) >= 3 {
 		org := parts[1]
-		repo := parts[len(parts)-1]
+		repo := moduleBase(modulePath)
 		if strings.HasPrefix(repo, "terraform-provider-") {
 			repo = strings.TrimPrefix(repo, "terraform-provider-")
 		}
@@ -87,4 +92,15 @@ func deriveRegistryAddress(modulePath string) string {
 	}
 
 	return ""
+}
+
+var semverMajorRe = regexp.MustCompile(`^v[0-9]+$`)
+
+func moduleBase(modulePath string) string {
+	base := path.Base(modulePath)
+	if semverMajorRe.MatchString(base) {
+		parent := path.Dir(modulePath)
+		base = path.Base(parent)
+	}
+	return base
 }
