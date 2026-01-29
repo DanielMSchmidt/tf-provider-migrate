@@ -12,3 +12,29 @@ A CLI tool to help migrate an existing Terraform provider from SDKv2 to the prov
 - Eventually, the user can then start migrating resources one by one from SDKv2 to the framework structure
 - Once all resources are migrated, the user can then remove the SDKv2 code and the muxing.
 
+## Integration validation
+
+There is an integration test that clones real providers, runs `check` + `migrate`, and then compiles them.
+Run it with:
+
+```bash
+go test -tags=integration ./internal/migrate -run TestRealProviders
+```
+
+You can override the provider list with `TPM_REAL_PROVIDERS`. Format:
+
+```
+name|repo|registry|provider,name|repo|registry|provider
+```
+
+Fields:
+- `name` (required): test case name
+- `repo` (optional): git URL (defaults to `name` if omitted)
+- `registry` (optional): registry address to pass to `migrate`
+- `provider` (optional): provider type name override
+
+Example:
+
+```bash
+TPM_REAL_PROVIDERS="digitalocean|https://github.com/digitalocean/terraform-provider-digitalocean.git|registry.terraform.io/digitalocean/digitalocean|digitalocean,postgresql|https://github.com/cyrilgdn/terraform-provider-postgresql.git"
+```
