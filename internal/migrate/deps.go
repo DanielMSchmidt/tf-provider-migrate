@@ -143,20 +143,4 @@ func versionOrFallback(version, fallback string) string {
 	return fallback
 }
 
-func syncVendor(moduleRoot string, force bool) error {
-	vendorDir := filepath.Join(moduleRoot, "vendor")
-	if _, err := os.Stat(vendorDir); err != nil {
-		if os.IsNotExist(err) && !force {
-			return nil
-		}
-		if err != nil && !os.IsNotExist(err) {
-			return err
-		}
-	}
-
-	cmd := exec.Command("go", "mod", "vendor")
-	cmd.Dir = moduleRoot
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
+// vendoring is intentionally not performed by this tool

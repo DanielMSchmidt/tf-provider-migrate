@@ -57,7 +57,6 @@ func runMigrate(args []string) {
 	registry := flags.String("registry-address", "", "registry address (e.g. registry.terraform.io/org/name)")
 	providerName := flags.String("provider-name", "", "provider type name override (default derived)")
 	dryRun := flags.Bool("dry-run", false, "show planned changes without writing files")
-	vendorMode := flags.String("vendor", "off", "vendor mode: on, off")
 	flags.Parse(args)
 
 	opts := migrate.Options{
@@ -65,7 +64,6 @@ func runMigrate(args []string) {
 		RegistryAddress: *registry,
 		ProviderName:    *providerName,
 		DryRun:          *dryRun,
-		VendorMode:      *vendorMode,
 	}
 
 	report, err := migrate.Migrate(opts)
@@ -86,7 +84,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Usage:")
 	fmt.Fprintln(os.Stderr, "  tf-provider-migrate check [--path PATH] [--registry-address ADDR] [--provider-name NAME]")
-	fmt.Fprintln(os.Stderr, "  tf-provider-migrate migrate [--path PATH] [--registry-address ADDR] [--provider-name NAME] [--dry-run] [--vendor on|off]")
+	fmt.Fprintln(os.Stderr, "  tf-provider-migrate migrate [--path PATH] [--registry-address ADDR] [--provider-name NAME] [--dry-run]")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Commands:")
 	fmt.Fprintln(os.Stderr, "  check    validate provider is suitable for migration")

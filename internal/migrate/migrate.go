@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"strings"
 )
 
 var ErrDryRun = errors.New("dry run")
@@ -114,24 +113,7 @@ func Migrate(opts Options) (Report, error) {
 		return Report{}, err
 	}
 
-	vendorMode := normalizeVendorMode(opts.VendorMode)
-	switch vendorMode {
-	case "on":
-		if err := syncVendor(moduleRoot, true); err != nil {
-			return Report{}, err
-		}
-	case "off":
-	default:
-		return Report{}, fmt.Errorf("invalid vendor mode: %s", opts.VendorMode)
-	}
-
 	return report, nil
 }
 
-func normalizeVendorMode(mode string) string {
-	mode = strings.ToLower(strings.TrimSpace(mode))
-	if mode == "" {
-		return "off"
-	}
-	return mode
-}
+// vendoring is intentionally not performed by this tool

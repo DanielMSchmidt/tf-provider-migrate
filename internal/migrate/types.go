@@ -7,7 +7,6 @@ type Options struct {
 	RegistryAddress string
 	ProviderName    string
 	DryRun          bool
-	VendorMode      string
 }
 
 type Report struct {
