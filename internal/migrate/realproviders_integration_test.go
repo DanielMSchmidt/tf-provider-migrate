@@ -16,6 +16,7 @@ import (
 type realProviderCase struct {
 	Name            string
 	Repo            string
+	Ref             string
 	RegistryAddress string
 	ProviderName    string
 }
@@ -23,17 +24,13 @@ type realProviderCase struct {
 func TestRealProviders(t *testing.T) {
 	t.Parallel()
 
-	cases := realProviderCases()
-	if len(cases) == 0 {
-		t.Skip("no real providers configured")
-	}
-
-	for _, providerCase := range cases {
+	for _, providerCase := range realProviderCases() {
 		providerCase := providerCase
 		t.Run(providerCase.Name, func(t *testing.T) {
 			t.Parallel()
 
 			repoDir := cloneRepo(t, providerCase.Repo)
+			checkoutRef(t, repoDir, providerCase.Ref)
 			opts := Options{
 				Path:            repoDir,
 				RegistryAddress: providerCase.RegistryAddress,
@@ -54,57 +51,23 @@ func TestRealProviders(t *testing.T) {
 }
 
 func realProviderCases() []realProviderCase {
-	if raw := strings.TrimSpace(os.Getenv("TPM_REAL_PROVIDERS")); raw != "" {
-		return parseProviderCases(raw)
-	}
-
 	return []realProviderCase{
 		{
 			Name: "ansible",
 			Repo: "https://github.com/ansible/terraform-provider-ansible.git",
+			Ref:  "1723917a21a7607d9175f0eee2b3611299987492",
 		},
 		{
 			Name: "digitalocean",
 			Repo: "https://github.com/digitalocean/terraform-provider-digitalocean.git",
+			Ref:  "ea617eca38d7b3f7e8c40f944dc0d4f38ad6f3cf",
 		},
 		{
 			Name: "postgresql",
 			Repo: "https://github.com/cyrilgdn/terraform-provider-postgresql.git",
+			Ref:  "450ce85b50c1f47ebdb239c9d05e2f53847389ba",
 		},
 	}
-}
-
-func parseProviderCases(raw string) []realProviderCase {
-	parts := strings.Split(raw, ",")
-	cases := make([]realProviderCase, 0, len(parts))
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-
-		fields := strings.Split(part, "|")
-		entry := realProviderCase{
-			Name: strings.TrimSpace(fields[0]),
-		}
-		if entry.Name == "" {
-			continue
-		}
-		if len(fields) > 1 {
-			entry.Repo = strings.TrimSpace(fields[1])
-		}
-		if len(fields) > 2 {
-			entry.RegistryAddress = strings.TrimSpace(fields[2])
-		}
-		if len(fields) > 3 {
-			entry.ProviderName = strings.TrimSpace(fields[3])
-		}
-		if entry.Repo == "" {
-			entry.Repo = entry.Name
-		}
-		cases = append(cases, entry)
-	}
-	return cases
 }
 
 func cloneRepo(t *testing.T, repo string) string {
@@ -125,6 +88,29 @@ func cloneRepo(t *testing.T, repo string) string {
 	}
 
 	return target
+}
+
+func checkoutRef(t *testing.T, repoDir, ref string) {
+	t.Helper()
+	if strings.TrimSpace(ref) == "" {
+		return
+	}
+
+	fetch := exec.Command("git", "fetch", "--depth=1", "origin", ref)
+	fetch.Dir = repoDir
+	fetch.Stdout = os.Stdout
+	fetch.Stderr = os.Stderr
+	if err := fetch.Run(); err != nil {
+		t.Fatalf("git fetch %s failed: %v", ref, err)
+	}
+
+	cmd := exec.Command("git", "checkout", ref)
+	cmd.Dir = repoDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("git checkout %s failed: %v", ref, err)
+	}
 }
 
 func runGoTestCompile(t *testing.T, dir string) {

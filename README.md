@@ -66,20 +66,4 @@ Run it with:
 go test -tags=integration ./internal/migrate -run TestRealProviders
 ```
 
-You can override the provider list with `TPM_REAL_PROVIDERS`. Format:
-
-```
-name|repo|registry|provider,name|repo|registry|provider
-```
-
-Fields:
-- `name` (required): test case name
-- `repo` (optional): git URL (defaults to `name` if omitted)
-- `registry` (optional): registry address to pass to `migrate`
-- `provider` (optional): provider type name override
-
-Example:
-
-```bash
-TPM_REAL_PROVIDERS="digitalocean|https://github.com/digitalocean/terraform-provider-digitalocean.git|registry.terraform.io/digitalocean/digitalocean|digitalocean,postgresql|https://github.com/cyrilgdn/terraform-provider-postgresql.git"
-```
+The provider list is fixed to specific git SHAs to keep integration validation deterministic.
