@@ -120,10 +120,6 @@ func Migrate(opts Options) (Report, error) {
 		if err := syncVendor(moduleRoot, true); err != nil {
 			return Report{}, err
 		}
-	case "auto":
-		if err := syncVendor(moduleRoot, false); err != nil {
-			return Report{}, err
-		}
 	case "off":
 	default:
 		return Report{}, fmt.Errorf("invalid vendor mode: %s", opts.VendorMode)
@@ -135,7 +131,7 @@ func Migrate(opts Options) (Report, error) {
 func normalizeVendorMode(mode string) string {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	if mode == "" {
-		return "auto"
+		return "off"
 	}
 	return mode
 }

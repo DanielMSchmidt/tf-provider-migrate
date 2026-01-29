@@ -36,7 +36,7 @@ Optional flags:
 - `--registry-address`: override the registry address used by `tf5server.Serve`
 - `--provider-name`: override the provider type name in framework metadata
 - `--dry-run`: show the plan without writing files (for `migrate`)
-- `--vendor`: `auto` (default, run vendor only if `vendor/` exists), `on` (force `go mod vendor`), `off` (skip vendoring)
+- `--vendor`: `off` (default, skip vendoring), `on` (force `go mod vendor`)
 
 ## Generated layout
 
