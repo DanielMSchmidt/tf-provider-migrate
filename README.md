@@ -12,6 +12,50 @@ A CLI tool to help migrate an existing Terraform provider from SDKv2 to the prov
 - Eventually, the user can then start migrating resources one by one from SDKv2 to the framework structure
 - Once all resources are migrated, the user can then remove the SDKv2 code and the muxing.
 
+## Usage
+
+Build:
+
+```bash
+go build -o /tmp/tf-provider-migrate ./cmd/tf-provider-migrate
+```
+
+Check a provider:
+
+```bash
+/tmp/tf-provider-migrate check --path /path/to/provider
+```
+
+Migrate a provider (adds framework scaffold + muxed `main.go`):
+
+```bash
+/tmp/tf-provider-migrate migrate --path /path/to/provider
+```
+
+Optional flags:
+- `--registry-address`: override the registry address used by `tf5server.Serve`
+- `--provider-name`: override the provider type name in framework metadata
+- `--dry-run`: show the plan without writing files (for `migrate`)
+
+## Generated layout
+
+After `migrate`, a new framework scaffold is created at:
+
+```
+framework/provider.go
+```
+
+`main.go` is rewritten to use `terraform-plugin-mux` so the SDKv2 provider and the framework provider can run side-by-side.
+
+## Limitations
+
+- The parser expects the SDKv2 provider schema to be in a `Provider() *schema.Provider` function.
+- Provider schema can be a literal, a named map variable, or returned from a helper function.
+- Only the provider block is replicated (resources/data sources are not migrated).
+- Nested blocks are supported only for list/set blocks with `Elem: &schema.Resource{...}`.
+
+If `check` fails, it will report the first unsupported pattern it encountered.
+
 ## Integration validation
 
 There is an integration test that clones real providers, runs `check` + `migrate`, and then compiles them.
