@@ -143,13 +143,15 @@ func versionOrFallback(version, fallback string) string {
 	return fallback
 }
 
-func syncVendor(moduleRoot string) error {
+func syncVendor(moduleRoot string, force bool) error {
 	vendorDir := filepath.Join(moduleRoot, "vendor")
 	if _, err := os.Stat(vendorDir); err != nil {
-		if os.IsNotExist(err) {
+		if os.IsNotExist(err) && !force {
 			return nil
 		}
-		return err
+		if err != nil && !os.IsNotExist(err) {
+			return err
+		}
 	}
 
 	cmd := exec.Command("go", "mod", "vendor")
