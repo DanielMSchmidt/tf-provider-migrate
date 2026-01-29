@@ -43,6 +43,11 @@ type Block struct {
 	Attributes  []Attribute
 }
 
+type resolver struct {
+	varMaps map[string]*ast.CompositeLit
+	funcs   map[string]*ast.FuncDecl
+}
+
 func findProviderInfo(moduleRoot string) (ProviderInfo, error) {
 	files, err := goFiles(moduleRoot)
 	if err != nil {
@@ -56,6 +61,7 @@ func findProviderInfo(moduleRoot string) (ProviderInfo, error) {
 			return ProviderInfo{}, err
 		}
 
+		res := buildResolver(node)
 		for _, decl := range node.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok || fn.Name == nil || fn.Name.Name != "Provider" {
@@ -66,7 +72,7 @@ func findProviderInfo(moduleRoot string) (ProviderInfo, error) {
 				continue
 			}
 
-			info, ok, err := parseProviderFunction(fn)
+			info, ok, err := parseProviderFunction(fn, res)
 			if err != nil {
 				return ProviderInfo{}, fmt.Errorf("%s: %w", file, err)
 			}
@@ -79,7 +85,7 @@ func findProviderInfo(moduleRoot string) (ProviderInfo, error) {
 	return ProviderInfo{}, fmt.Errorf("provider function not found")
 }
 
-func parseProviderFunction(fn *ast.FuncDecl) (ProviderInfo, bool, error) {
+func parseProviderFunction(fn *ast.FuncDecl, res resolver) (ProviderInfo, bool, error) {
 	if fn.Body == nil {
 		return ProviderInfo{}, false, nil
 	}
@@ -104,7 +110,7 @@ func parseProviderFunction(fn *ast.FuncDecl) (ProviderInfo, bool, error) {
 	})
 
 	if providerLit != nil {
-		attrs, blocks, err := parseProviderComposite(providerLit)
+		attrs, blocks, err := parseProviderComposite(providerLit, res)
 		if err != nil {
 			return ProviderInfo{}, false, err
 		}
@@ -120,7 +126,7 @@ func parseProviderFunction(fn *ast.FuncDecl) (ProviderInfo, bool, error) {
 		comp, ok := ret.Results[0].(*ast.UnaryExpr)
 		if ok && comp.Op == token.AND {
 			if lit, ok := comp.X.(*ast.CompositeLit); ok {
-				attrs, blocks, err := parseProviderComposite(lit)
+				attrs, blocks, err := parseProviderComposite(lit, res)
 				if err != nil {
 					return ProviderInfo{}, false, err
 				}
@@ -132,7 +138,7 @@ func parseProviderFunction(fn *ast.FuncDecl) (ProviderInfo, bool, error) {
 	return ProviderInfo{}, false, nil
 }
 
-func parseProviderComposite(lit *ast.CompositeLit) ([]Attribute, []Block, error) {
+func parseProviderComposite(lit *ast.CompositeLit, res resolver) ([]Attribute, []Block, error) {
 	if !isSchemaProviderType(lit.Type) {
 		return nil, nil, fmt.Errorf("return value is not schema.Provider literal")
 	}
@@ -148,18 +154,40 @@ func parseProviderComposite(lit *ast.CompositeLit) ([]Attribute, []Block, error)
 			continue
 		}
 
-		mapLit, ok := kv.Value.(*ast.CompositeLit)
-		if !ok {
-			return nil, nil, fmt.Errorf("provider Schema is not a composite literal")
+		attrs, blocks, err := parseSchemaMapExpr(kv.Value, res)
+		if err != nil {
+			return nil, nil, err
 		}
-
-		return parseSchemaMap(mapLit)
+		return attrs, blocks, nil
 	}
 
 	return nil, nil, nil
 }
 
-func parseSchemaMap(lit *ast.CompositeLit) ([]Attribute, []Block, error) {
+func parseSchemaMapExpr(expr ast.Expr, res resolver) ([]Attribute, []Block, error) {
+	switch v := expr.(type) {
+	case *ast.CompositeLit:
+		return parseSchemaMap(v, res)
+	case *ast.Ident:
+		if lit, ok := res.varMaps[v.Name]; ok {
+			return parseSchemaMap(lit, res)
+		}
+		return nil, nil, fmt.Errorf("schema map %q not resolved", v.Name)
+	case *ast.CallExpr:
+		fnName := functionName(v.Fun)
+		if fnName == "" {
+			return nil, nil, fmt.Errorf("schema map function not resolved")
+		}
+		if fn, ok := res.funcs[fnName]; ok {
+			return parseSchemaMapFromFunc(fn, res)
+		}
+		return nil, nil, fmt.Errorf("schema map function %q not resolved", fnName)
+	default:
+		return nil, nil, fmt.Errorf("provider Schema is not a map literal")
+	}
+}
+
+func parseSchemaMap(lit *ast.CompositeLit, res resolver) ([]Attribute, []Block, error) {
 	if _, ok := lit.Type.(*ast.MapType); !ok && lit.Type != nil {
 		return nil, nil, fmt.Errorf("provider Schema is not a map literal")
 	}
@@ -177,7 +205,7 @@ func parseSchemaMap(lit *ast.CompositeLit) ([]Attribute, []Block, error) {
 			return nil, nil, fmt.Errorf("schema attribute name must be string literal")
 		}
 
-		attr, block, err := parseSchemaAttribute(name, kv.Value)
+		attr, block, err := parseSchemaAttribute(name, kv.Value, res)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -191,22 +219,22 @@ func parseSchemaMap(lit *ast.CompositeLit) ([]Attribute, []Block, error) {
 	return attrs, blocks, nil
 }
 
-func parseSchemaAttribute(name string, expr ast.Expr) (Attribute, *Block, error) {
+func parseSchemaAttribute(name string, expr ast.Expr, res resolver) (Attribute, *Block, error) {
 	lit, ok := expr.(*ast.UnaryExpr)
 	if ok && lit.Op == token.AND {
 		if comp, ok := lit.X.(*ast.CompositeLit); ok {
-			return parseSchemaComposite(name, comp)
+			return parseSchemaComposite(name, comp, res)
 		}
 	}
 
 	if comp, ok := expr.(*ast.CompositeLit); ok {
-		return parseSchemaComposite(name, comp)
+		return parseSchemaComposite(name, comp, res)
 	}
 
 	return Attribute{}, nil, fmt.Errorf("schema attribute %q is not a schema.Schema literal", name)
 }
 
-func parseSchemaComposite(name string, lit *ast.CompositeLit) (Attribute, *Block, error) {
+func parseSchemaComposite(name string, lit *ast.CompositeLit, res resolver) (Attribute, *Block, error) {
 	if lit.Type != nil && !isSchemaSchemaType(lit.Type) {
 		return Attribute{}, nil, fmt.Errorf("schema attribute %q is not schema.Schema", name)
 	}
@@ -261,7 +289,7 @@ func parseSchemaComposite(name string, lit *ast.CompositeLit) (Attribute, *Block
 				attr.Description = val
 			}
 		case "Elem":
-			info, err := parseElem(kv.Value)
+			info, err := parseElem(kv.Value, res)
 			if err != nil {
 				return Attribute{}, nil, fmt.Errorf("schema attribute %q: %w", name, err)
 			}
@@ -351,22 +379,22 @@ type elemInfo struct {
 	isResource bool
 }
 
-func parseElem(expr ast.Expr) (elemInfo, error) {
+func parseElem(expr ast.Expr, res resolver) (elemInfo, error) {
 	lit, ok := expr.(*ast.UnaryExpr)
 	if ok && lit.Op == token.AND {
 		if comp, ok := lit.X.(*ast.CompositeLit); ok {
-			return parseElemFromComposite(comp)
+			return parseElemFromComposite(comp, res)
 		}
 	}
 
 	if comp, ok := expr.(*ast.CompositeLit); ok {
-		return parseElemFromComposite(comp)
+		return parseElemFromComposite(comp, res)
 	}
 
 	return elemInfo{}, fmt.Errorf("Elem must be schema.Schema or schema.Resource literal")
 }
 
-func parseElemFromComposite(lit *ast.CompositeLit) (elemInfo, error) {
+func parseElemFromComposite(lit *ast.CompositeLit, res resolver) (elemInfo, error) {
 	if lit.Type == nil || isSchemaSchemaType(lit.Type) {
 		for _, elt := range lit.Elts {
 			kv, ok := elt.(*ast.KeyValueExpr)
@@ -388,7 +416,7 @@ func parseElemFromComposite(lit *ast.CompositeLit) (elemInfo, error) {
 	}
 
 	if isSchemaResourceType(lit.Type) {
-		attrs, blocks, err := parseResourceSchema(lit)
+		attrs, blocks, err := parseResourceSchema(lit, res)
 		if err != nil {
 			return elemInfo{}, err
 		}
@@ -398,7 +426,7 @@ func parseElemFromComposite(lit *ast.CompositeLit) (elemInfo, error) {
 	return elemInfo{}, fmt.Errorf("Elem must be schema.Schema or schema.Resource literal")
 }
 
-func parseResourceSchema(lit *ast.CompositeLit) ([]Attribute, []Block, error) {
+func parseResourceSchema(lit *ast.CompositeLit, res resolver) ([]Attribute, []Block, error) {
 	for _, elt := range lit.Elts {
 		kv, ok := elt.(*ast.KeyValueExpr)
 		if !ok {
@@ -408,11 +436,7 @@ func parseResourceSchema(lit *ast.CompositeLit) ([]Attribute, []Block, error) {
 		if !ok || key.Name != "Schema" {
 			continue
 		}
-		mapLit, ok := kv.Value.(*ast.CompositeLit)
-		if !ok {
-			return nil, nil, fmt.Errorf("resource Schema is not a composite literal")
-		}
-		return parseSchemaMap(mapLit)
+		return parseSchemaMapExpr(kv.Value, res)
 	}
 
 	return nil, nil, fmt.Errorf("resource Schema field not found")
@@ -527,6 +551,67 @@ func parseIntLiteral(expr ast.Expr) (int, bool) {
 		return 0, false
 	}
 	return val, true
+}
+
+func buildResolver(node *ast.File) resolver {
+	res := resolver{
+		varMaps: map[string]*ast.CompositeLit{},
+		funcs:   map[string]*ast.FuncDecl{},
+	}
+
+	for _, decl := range node.Decls {
+		switch d := decl.(type) {
+		case *ast.FuncDecl:
+			if d.Name != nil && d.Name.Name != "" {
+				res.funcs[d.Name.Name] = d
+			}
+		case *ast.GenDecl:
+			if d.Tok != token.VAR {
+				continue
+			}
+			for _, spec := range d.Specs {
+				valueSpec, ok := spec.(*ast.ValueSpec)
+				if !ok {
+					continue
+				}
+				for i, name := range valueSpec.Names {
+					if i >= len(valueSpec.Values) {
+						continue
+					}
+					if lit, ok := valueSpec.Values[i].(*ast.CompositeLit); ok {
+						if _, ok := lit.Type.(*ast.MapType); ok || lit.Type == nil {
+							res.varMaps[name.Name] = lit
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return res
+}
+
+func parseSchemaMapFromFunc(fn *ast.FuncDecl, res resolver) ([]Attribute, []Block, error) {
+	if fn.Body == nil {
+		return nil, nil, fmt.Errorf("schema map function has no body")
+	}
+	for _, stmt := range fn.Body.List {
+		ret, ok := stmt.(*ast.ReturnStmt)
+		if !ok || len(ret.Results) == 0 {
+			continue
+		}
+		return parseSchemaMapExpr(ret.Results[0], res)
+	}
+	return nil, nil, fmt.Errorf("schema map function has no return")
+}
+
+func functionName(expr ast.Expr) string {
+	switch v := expr.(type) {
+	case *ast.Ident:
+		return v.Name
+	default:
+		return ""
+	}
 }
 
 func goFiles(root string) ([]string, error) {

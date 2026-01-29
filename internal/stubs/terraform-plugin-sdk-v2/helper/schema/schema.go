@@ -12,16 +12,27 @@ func (p *Provider) Meta() interface{} {
 	return nil
 }
 
-type Resource struct{}
+type Resource struct {
+	Schema map[string]*Schema
+}
 
 type Schema struct {
-	Type        ValueType
-	Optional    bool
-	Required    bool
-	Computed    bool
-	Sensitive   bool
-	Description string
-	Elem        interface{}
+	Type          ValueType
+	Optional      bool
+	Required      bool
+	Computed      bool
+	Sensitive     bool
+	Description   string
+	Elem          interface{}
+	Default       interface{}
+	DefaultFunc   interface{}
+	Deprecated    string
+	ConflictsWith []string
+	ExactlyOneOf  []string
+	AtLeastOneOf  []string
+	RequiredWith  []string
+	MinItems      int
+	MaxItems      int
 }
 
 type ValueType int
@@ -37,5 +48,13 @@ const (
 )
 
 func NewGRPCProviderServer(_ *Provider) tfprotov5.ProviderServer {
+	return nil
+}
+
+func EnvDefaultFunc(_ string, _ interface{}) interface{} {
+	return nil
+}
+
+func MultiEnvDefaultFunc(_ []string, _ interface{}) interface{} {
 	return nil
 }

@@ -12,7 +12,7 @@ import (
 func TestMigrateFixtures(t *testing.T) {
 	t.Parallel()
 
-	fixtures := []string{"mock", "real"}
+	fixtures := []string{"mock", "real", "varschema"}
 	for _, fixture := range fixtures {
 		fixture := fixture
 		t.Run(fixture, func(t *testing.T) {
