@@ -109,5 +109,13 @@ func Migrate(opts Options) (Report, error) {
 		return Report{}, err
 	}
 
+	if err := ensureGoSum(moduleRoot); err != nil {
+		return Report{}, err
+	}
+
+	if err := syncVendor(moduleRoot); err != nil {
+		return Report{}, err
+	}
+
 	return report, nil
 }

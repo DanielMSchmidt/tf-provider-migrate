@@ -8,3 +8,8 @@ Full context is injected by `gt prime` at session start.
 
 - Check MQ: `gt mq list`
 - Process next: `gt mq process`
+
+## Quality Gates (required after each change)
+
+- `go test ./...`
+- `go test -tags=integration ./internal/migrate -run TestRealProviders`

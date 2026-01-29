@@ -3,6 +3,7 @@ package migrate
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	"golang.org/x/mod/modfile"
@@ -98,4 +99,62 @@ func requireVersion(file *modfile.File, path string) string {
 		}
 	}
 	return ""
+}
+
+func ensureGoSum(moduleRoot string) error {
+	modPath := filepath.Join(moduleRoot, "go.mod")
+	data, err := os.ReadFile(modPath)
+	if err != nil {
+		return err
+	}
+
+	file, err := modfile.Parse(modPath, data, nil)
+	if err != nil {
+		return err
+	}
+
+	deps := selectDeps(file)
+	versions := map[string]string{
+		frameworkModule: versionOrFallback(requireVersion(file, frameworkModule), deps.frameworkVersion),
+		muxModule:       versionOrFallback(requireVersion(file, muxModule), deps.muxVersion),
+		pluginGoModule:  versionOrFallback(requireVersion(file, pluginGoModule), deps.pluginGoVersion),
+	}
+
+	for mod, version := range versions {
+		if version == "" {
+			continue
+		}
+		cmd := exec.Command("go", "mod", "download", fmt.Sprintf("%s@%s", mod, version))
+		cmd.Dir = moduleRoot
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func versionOrFallback(version, fallback string) string {
+	if version != "" {
+		return version
+	}
+	return fallback
+}
+
+func syncVendor(moduleRoot string) error {
+	vendorDir := filepath.Join(moduleRoot, "vendor")
+	if _, err := os.Stat(vendorDir); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	cmd := exec.Command("go", "mod", "vendor")
+	cmd.Dir = moduleRoot
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
