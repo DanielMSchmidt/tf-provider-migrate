@@ -1,0 +1,14 @@
+# tf-provider-migrate
+
+A CLI tool to help migrate an existing Terraform provider from SDKv2 to the provider Framework.
+[There are a set of quite repeatable steps in this migration](https://danielmschmidt.de/posts/2025-09-17-terraform-provider-sdk-to-framework-migration/) that I think could be automated to some degree. This tool is a first attempt at that.
+
+## Goals
+
+- Auto-Detection if the provider at hand is a good candidate for migration (follows the conventions of SDKv2 providers)
+- The migration step should mux the provider and add an empty framework structure alongside the existing SDKv2 code
+- The framework structure needs to replicate the provider block from the SDKv2 code
+- The user can then start to add new resources in the framework structure while still maintaining the existing SDKv2 resources
+- Eventually, the user can then start migrating resources one by one from SDKv2 to the framework structure
+- Once all resources are migrated, the user can then remove the SDKv2 code and the muxing.
+
